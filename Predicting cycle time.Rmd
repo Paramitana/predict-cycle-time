@@ -1,0 +1,367 @@
+---
+title: "Report for predicting cycle time"
+author: "Na Zhang"
+date: "2020/5/16"
+output: html_document
+---
+#### 1.Data Previous Preprocess
+##### 1.1 Importing data set
+
+Pre-load some related packages.
+```{r setup, include=FALSE}
+library(caret)
+library(readxl)
+library(dplyr)
+library(rockchalk)
+library(GGally)
+library(scatterplot3d)
+```
+
+This dataset has 93,632 samples, to save time, we randomly sampled 2% the original dataset, i.e., we will use 18,726 samples with four variables, *Km_Haul*, *Load_Tonnes*, *Empty_Spd*, *Temp*, representing haul's distance, load tonnes, truck speed when empty and temperature, respectively, to predict cycle time in this report, also, we removed the missing values, so 18,400 samples   with 4 predictors left.\\
+
+```{r}
+set.seed(100)
+dat <- read_excel("/Users/paramitazhangna/Desktop/2by2.xlsx")
+int <- sample(nrow(dat),nrow(dat)*0.2, replace = FALSE)
+dat <- dat[int,]
+dat <- subset(dat, Empty_Spd >0)
+```
+
+The reason we choose these variables is, the cycle time, except haul’s distance, we believe it is related to tonne of loading, by guessing, the larger loading tonne, the more time consumed, truck speed when empty can depict the situation of a truck to some extent, without loading interference. Also, the temperature factor was considered in this report.\\
+
+```{r}
+time <- 1/log(dat$time)
+Km_Haul <- sqrt(dat$Km_Haul)
+Load_Tonnes <- sqrt(max(dat$Load_Tonnes+1) - dat$Load_Tonnes)
+Empty_Spd <- dat$Empty_Spd
+Temp <- sqrt(max(dat$Temp+1) - dat$Temp)
+```
+
+After checking the histogram of the raw data, there exist some skewness, to fit a better model, we use some transformation methods varying with different skewed variables. \\
+
+###### **Histograms after transformation**
+
+```{r echo=FALSE}
+par(mfrow=c(2,2))
+hist(Km_Haul, breaks = 30)
+hist(Load_Tonnes, breaks = 30)
+hist(Empty_Spd, breaks = 30)
+hist(Temp, breaks = 30)
+```
+
+
+```{r}
+dat <- data.frame(cbind(time,Km_Haul,Load_Tonnes,Empty_Spd,Temp))
+ggpairs(dat)
+```
+
+This plot gives us some initial intuition about the relationship between cycle time and these four predictors.
+
+##### 1.2 Data Partition
+
+```{r}
+set.seed(123)
+index <- sample(nrow(dat),nrow(dat)*0.5)
+train <- dat[index,]
+test <- dat[-index,]
+summary(train)
+boxplot(train)
+```
+
+We randomly split data into training and testing sets half and half looked more detailed statistical information, like minimum value, maximum value, median, mean, and the 1st and 3rd quartile values for each column in our dataset by using *summary* and boxplot.\\
+
+#### 2. Model Training and Testing
+
+##### 2.1 Linear Regression
+
+###### **Model 1: All in**
+
+For the first model, we use our entire data set to fit the model.
+
+```{r}
+fit.lm <- lm(time~.,data = train)
+summary(fit.lm)
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+p <- scatterplot3d(test$Km_Haul, test$Load_Tonnes, test$time,
+                   color="steelblue", angle=55, type = "h",
+                   main = "linear fitted plane=",
+                   zlab = "cycle time",
+                   grid=TRUE, box=FALSE, 
+                   col.grid = "grey", lty.grid=par("lty"))
+# add a plane representing the fit of the model
+fit1 <- lm(time~Km_Haul+Load_Tonnes, data = train)
+p$plane3d(fit1, col='orangered')
+```
+
+###### **Model 2: Forward Selection Step-linear regression**
+
+```{r}
+null_model <- lm(time ~ 1, data = train)
+step.fit <- step(null_model, scope = list(lower = null_model, upper = fit.lm),
+                 direction = "forward")
+par(mfrow=c(2,2))
+plot(step.fit, main="Step-linear", pch = 16, col = "steelblue")
+```
+
+Forward Stepwise is a Subset Selection method that begins with a model containing no predictors (null model), and then adds predictors to the model, one-at-a-time, until all of the predictors are in the model. In particular, at each step the variable that gives the greatest additional improvement to the fit is added to the model.
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYstep <- predict(step.fit, newdata = test)
+par(mfrow=c(1,1))
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("Step-linear regression")
+fit0 <- lm(time ~ Km_Haul ,data = train)
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYstep, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Linear anova test**
+
+```{r}
+fit0 <- lm(time ~ Km_Haul ,data = train)
+fit1 <- lm(time~Km_Haul+Load_Tonnes, data = train)
+fit2 <- lm(time~Km_Haul+Load_Tonnes+Empty_Spd, data = train)
+fit.lm <- lm(time~.,data = train) 
+anova(fit0,fit1,fit2, fit.lm, test = "Chisq")
+```
+
+This result tells us these four predictors are all significant, from this perspective, we decided to use all of them to fit models in the remain of the report.
+
+###### **Model 3: Clustered linear regression**
+
+Clustered linear regression is an extension of linear regression algorithm. It approximates on the subspaces, and therefore, it can give accurate results. Also, irrelevant features are eliminated easily. Robustness can be achieved by having large number of training instances.
+
+```{r}
+library(miceadds)
+fit.cluster <- miceadds::lm.cluster( data=train, formula=time~., cluster="time")
+predictYcluster <- predict(fit.cluster[["lm_res"]], test)
+
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("Clustered linear regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYcluster, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 4: Mixture of regression**
+
+A mixture model is a probabilistic model for representing the presence of sub-populations within an overall population, without requiring that an observed data-set should identify the sub-population to which an individual observation belongs. It permits finding mixtures of hidden group memberships for other kinds of models, including regression models. This sometimes enables us to identify sets of distinct relationships amongst sub-groups, hidden within a larger population. The goal of mixture modeling is to model our data as a mixture of populations that have distinct patterns of data.
+
+```{r}
+library(flexmix)
+fit.mix <- flexmix(time~., data = train, k=3,
+        control = list(verb = 5, iter = 1000))
+summary(fit.mix)
+plot(fit.mix)
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYmix <- predict(fit.mix, test, aggregate = TRUE)[[1]][,1]
+plot(test$Km_Haul, test$time, col = "#00AFBB", xlab = "Km Haul")
+title("Mixture of regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYmix, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Comparison of the data grouped by time quantile v.s mixture regression in pairs plot**
+
+```{r echo=FALSE}
+par(mfrow=c(1,2))
+grouptime <- NA
+grouptime[time <= 0.2773] <- 1
+grouptime[time > 0.2773 & time <= 0.2848] <- 2
+grouptime[time > 0.2848] <- 3
+pairs(dat, col = c("#00AFBB", "#E7B800", "#FC4E07")[grouptime],  
+      pch = c(8, 16, 10)[grouptime],                            
+      main = "pairs plot grouped  by Cycle Time")
+
+label <- attributes(fit.mix)$cluster
+pairs(dat, col = c("#00AFBB", "#E7B800", "#FC4E07")[label],  
+      pch = c(8, 16, 10)[label],                            
+      main = "pairs plot grouped by Mixture of Regression")
+```
+
+##### 2.2 Non-linear Regression
+
+###### **Model 6: Polynomial regression**
+
+```{r}
+xx <- cbind(train$Km_Haul, train$Load_Tonnes, train$Empty_Spd, train$Temp)
+fit.poly <-  lm(time ~ poly(xx, degree=3), data=train)
+summary(fit.poly)
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYpoly <- predict(fit.poly, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("Poly regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYpoly, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 7: LOESS regression**
+
+Loess short for Local Regression is a non-parametric approach that fits multiple regressions in local neighborhood. It is a method for fitting a smooth curve between two variables, or fitting a smooth surface between an outcome and up to four predictor variables.
+
+```{r}
+fit.loess <- loess(time~Km_Haul + Load_Tonnes + Empty_Spd + Temp,
+                   control = loess.control(surface = "direct"),
+                   data = train)
+summary(fit.loess)
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYloess <- predict(fit.loess, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("LOESS regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYloess, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 8: GAM regression**
+
+A generalized additive model (GAM) is a generalized linear model in which the linear predictor depends linearly on unknown smooth functions of some predictor variables, and interest focuses on inference about these smooth functions. 
+
+```{r}
+library(mgcv)
+fit.gam <- gam(time~ s(Km_Haul) +s(Load_Tonnes) +s(Empty_Spd) +s(Temp),
+               data = train)
+```
+
+###### **Anova test between GAM and linear regression**
+
+```{r}
+anova(fit.lm, fit.gam, test = "Chisq")
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYgam <- predict(fit.gam, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("GAM regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYgam, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 9: SVM polynomial kernel regression**
+
+```{r}
+library(e1071)
+fit.svm <- svm(time~., data = train, kernel = "polynomial")
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYsvm <- predict(fit.svm, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("SVM polynomial kernel regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYsvm, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 10: SVM radial basis regression**
+
+```{r}
+fit.svm.radi <- svm(time~., data = train, kernel = "radial")
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYsvm.radi <- predict(fit.svm.radi, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("SVM radial basis regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYsvm.radi, col = "lightcoral",
+       xlab = "Km Haul")
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 11: Random Forest regression**
+
+```{r}
+library(ranger)
+fit.rf <- ranger(time~., data = train)
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+predictYrf <- predict(fit.rf, test)
+plot(test$Km_Haul, test$time, xlab = "Km Haul", col = "#00AFBB")
+title("Random Forest regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYrf$predictions, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+###### **Model 12: Boosting Regression**
+
+Gradient boosting is a machine learning technique for regression and classification problems, which produces a prediction model in the form of an ensemble of weak prediction models, typically decision trees. It builds the model in a stage-wise fashion like other boosting methods do, and it generalizes them by allowing optimization of an arbitrary differentiable loss function.
+
+```{r}
+library(gbm)
+fit.boost <-  gbm(time~., data = train, distribution = "gaussian",
+                  n.trees = 5000, interaction.depth = 4)
+predictYboost <- predict(fit.boost, test, n.trees = 5000)
+fit.boost
+```
+
+###### **Prediction Result**
+
+```{r echo=FALSE}
+plot(test$Km_Haul, test$time, col = "#00AFBB", xlab = "Km Haul")
+title("Boosting Regression")
+abline(fit0, col="darkgreen")
+points(test$Km_Haul, predictYboost, col = "lightcoral", pch=10)
+legend("bottomleft", legend=c("Testing Data", "Preticted points"),
+       col=c("#00AFBB", "lightcoral"), lty=1:2, cex=0.8,
+       pch = c(1, 10), box.lty = 0)
+```
+
+#### 3. Summary
+
+From the comparison results showed above,  we could see tree-based method out-performed among all these three main (Linear Rrgression, Non-linear Regression, Machine Learning) methods we used in our project. Especially the ensemble method Boosted regression trees, which incorporate important advantages of tree‐based methods, handling different types of predictor variables and accommodating missing data. They have no need for prior data transformation or elimination of outliers, can fit complex nonlinear relationships, and automatically handle interaction effects between predictors. Fitting multiple trees overcomes the biggest drawback of single tree models: their relatively poor predictive performance. Although the models are complex, they can be summarized in ways that give powerful ecological insight, and their predictive performance is superior to most traditional modelling methods.
